@@ -163,15 +163,16 @@ export default function InviteFromPersonModal({ person, onClose }) {
               </div>
 
               <div>
-                <label className="text-xs font-medium text-bark-600 block mb-1.5">What you'll share with them</label>
-                <div className="grid grid-cols-2 gap-2">
+                <label className="text-xs font-medium text-bark-600 block mb-1.5">Initial sharing</label>
+                <div className="space-y-1.5">
                   {[
-                    { value: 'full',    label: '🌿 All shared',    desc: 'All "Shared" members' },
-                    { value: 'partial', label: '🔒 Review first',  desc: 'You choose after link' },
+                    { value: 'just_me',  label: '🙋 Just me',         desc: `Only share ${person.full_name} — keep rest private` },
+                    { value: 'full',     label: '🌿 My whole tree',   desc: 'Share everyone marked as Shared' },
+                    { value: 'partial',  label: '⚙️ I\'ll set it up', desc: 'Start private, manage later' },
                   ].map(opt => (
                     <button key={opt.value} type="button" onClick={() => setShareMode(opt.value)}
                       className={clsx(
-                        'text-left p-2.5 rounded-xl border text-xs transition-all',
+                        'w-full text-left p-2.5 rounded-xl border text-xs transition-all',
                         shareMode === opt.value
                           ? 'border-bark-500 bg-bark-50 text-bark-700'
                           : 'border-bark-200 bg-white text-bark-500 hover:border-bark-300'

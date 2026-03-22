@@ -4,12 +4,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
-from app.schemas.person import PersonCreate, PersonUpdate, PersonOut, RelationCreate, RelationOut, TreeData, NodePositionUpdate
+from app.schemas.person import (
+    PersonCreate, PersonUpdate, PersonOut, RelationCreate, RelationOut,
+    TreeData, NodePositionUpdate, ShareUpdate
+)
 from app.services.person_service import (
     get_persons_for_user, get_linked_persons, get_relations_for_user,
     create_person, update_person, delete_person,
     create_relation, delete_relation, update_positions,
-    parse_vcf, export_to_vcf
+    parse_vcf, export_to_vcf,
+    batch_update_sharing, set_share_all, get_sharing_status,
 )
 from typing import List
 
@@ -95,6 +99,45 @@ async def save_positions(
     return {"ok": True}
 
 
+# ── Sharing endpoints ──────────────────────────────────────────────
+
+@router.get("/sharing/{link_id}")
+async def get_sharing(
+    link_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Return all own persons with their shared/private status for a specific link."""
+    return await get_sharing_status(db, current_user.id, link_id)
+
+
+@router.post("/sharing/batch")
+async def batch_share(
+    data: ShareUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Add or remove link_id from shared_with for a list of persons."""
+    count = await batch_update_sharing(
+        db, current_user.id, data.person_ids, data.link_id, data.shared
+    )
+    return {"ok": True, "updated": count}
+
+
+@router.post("/sharing/all")
+async def share_all(
+    link_id: int,
+    broadcast: bool = True,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Share all (or unshare all) persons with a given link."""
+    count = await set_share_all(db, current_user.id, link_id, broadcast)
+    return {"ok": True, "updated": count}
+
+
+# ── VCF Import/Export ──────────────────────────────────────────────
+
 @router.post("/import/vcf", response_model=List[PersonOut])
 async def import_vcf(
     file: UploadFile = File(...),
@@ -106,7 +149,6 @@ async def import_vcf(
         vcf_text = content.decode("utf-8")
     except UnicodeDecodeError:
         vcf_text = content.decode("latin-1")
-
     parsed = parse_vcf(vcf_text)
     created = []
     for p_data in parsed:

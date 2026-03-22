@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Any, List
+from typing import Optional, List, Any
 from datetime import datetime
 
 
@@ -20,6 +20,7 @@ class PersonCreate(BaseModel):
     extra_fields: Optional[dict] = {}
     notes: Optional[str] = None
     visibility: str = "private"
+    shared_with: Optional[List[Any]] = []
 
 
 class PersonUpdate(BaseModel):
@@ -39,6 +40,7 @@ class PersonUpdate(BaseModel):
     extra_fields: Optional[dict] = None
     notes: Optional[str] = None
     visibility: Optional[str] = None
+    shared_with: Optional[List[Any]] = None
 
 
 class PersonOut(BaseModel):
@@ -60,6 +62,7 @@ class PersonOut(BaseModel):
     extra_fields: Optional[dict]
     notes: Optional[str]
     visibility: str
+    shared_with: Optional[List[Any]] = []
     created_at: datetime
     updated_at: Optional[datetime]
 
@@ -67,7 +70,7 @@ class PersonOut(BaseModel):
 
 
 class RelationCreate(BaseModel):
-    relation_type: str  # parent_child | spouse | partner | sibling | custom
+    relation_type: str
     parent_id: Optional[int] = None
     child_id: Optional[int] = None
     person_a_id: Optional[int] = None
@@ -97,3 +100,10 @@ class NodePositionUpdate(BaseModel):
     person_id: int
     pos_x: float
     pos_y: float
+
+
+class ShareUpdate(BaseModel):
+    """Batch update shared_with for multiple persons at once."""
+    person_ids: List[int]
+    link_id: int
+    shared: bool  # True = add link_id, False = remove it

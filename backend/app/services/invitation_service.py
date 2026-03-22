@@ -75,6 +75,32 @@ async def accept_invitation(
 
     invitation.status = "accepted"
     invitation.tree_link_id = link.id
+    await db.flush()
+
+    # Auto-apply initial sharing based on share_mode
+    if invitation.share_mode == "just_me" and invitation.contact_person_id:
+        # Share only the contact person node
+        cp = await db.execute(
+            select(Person).where(Person.id == invitation.contact_person_id)
+        )
+        cp = cp.scalar_one_or_none()
+        if cp:
+            sw = list(cp.shared_with or [])
+            if link.id not in sw:
+                sw.append(link.id)
+            cp.shared_with = sw
+    elif invitation.share_mode == "full":
+        # Share all persons of the sender that were previously marked shared (visibility=shared)
+        # or simply share all of them with this link
+        persons_result = await db.execute(
+            select(Person).where(Person.owner_id == invitation.sender_id)
+        )
+        for p in persons_result.scalars().all():
+            sw = list(p.shared_with or [])
+            if link.id not in sw:
+                sw.append(link.id)
+            p.shared_with = sw
+    # 'partial' = do nothing, user manages manually
 
     await db.commit()
     await db.refresh(invitation)

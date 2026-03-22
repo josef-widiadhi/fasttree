@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react'
 import api from '../utils/api'
 import toast from 'react-hot-toast'
-import { Mail, Send, Check, X, Link2, Unlink, Copy, Users } from 'lucide-react'
+import { Mail, Send, Check, X, Link2, Unlink, Copy, Users, Settings2 } from 'lucide-react'
 import clsx from 'clsx'
+import SharingManager from '../components/SharingManager'
 
 export default function InvitePage() {
   const [sent, setSent] = useState([])
   const [received, setReceived] = useState([])
   const [linked, setLinked] = useState([])
+  const [managingLink, setManagingLink] = useState(null)
   const [email, setEmail] = useState('')
   const [message, setMessage] = useState('')
   const [shareMode, setShareMode] = useState('full')
@@ -281,15 +283,30 @@ export default function InvitePage() {
                     )}
                   </div>
                 </div>
-                <button onClick={() => revokeLink(link.link_id)}
-                  className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0" title="Remove link">
-                  <Unlink size={16} />
-                </button>
+                <div className="flex gap-1 flex-shrink-0">
+                  <button
+                    onClick={() => setManagingLink(link)}
+                    className="p-2 text-bark-400 hover:text-bark-700 hover:bg-bark-50 rounded-lg transition-colors"
+                    title="Manage sharing">
+                    <Settings2 size={16} />
+                  </button>
+                  <button onClick={() => revokeLink(link.link_id)}
+                    className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                    title="Remove link">
+                    <Unlink size={16} />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         )}
       </div>
+      {managingLink && (
+        <SharingManager
+          link={managingLink}
+          onClose={() => setManagingLink(null)}
+        />
+      )}
     </div>
   )
 }

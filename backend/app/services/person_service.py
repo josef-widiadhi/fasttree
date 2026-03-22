@@ -1,12 +1,10 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_
-from sqlalchemy.orm import selectinload
 from app.models.person import Person, Relation, TreeLink
 from app.models.user import User
 from app.schemas.person import PersonCreate, PersonUpdate, RelationCreate
 from typing import Optional, List
 import vobject
-from datetime import datetime
 
 
 async def get_persons_for_user(db: AsyncSession, user_id: int) -> List[Person]:
@@ -16,9 +14,8 @@ async def get_persons_for_user(db: AsyncSession, user_id: int) -> List[Person]:
     return result.scalars().all()
 
 
-async def get_linked_persons(db: AsyncSession, user_id: int) -> List[Person]:
-    """Get persons from linked trees that have visibility=shared"""
-    links = await db.execute(
+async def get_active_links_for_user(db: AsyncSession, user_id: int) -> List[TreeLink]:
+    result = await db.execute(
         select(TreeLink).where(
             and_(
                 or_(TreeLink.owner_id == user_id, TreeLink.linked_user_id == user_id),
@@ -26,27 +23,34 @@ async def get_linked_persons(db: AsyncSession, user_id: int) -> List[Person]:
             )
         )
     )
-    links = links.scalars().all()
+    return result.scalars().all()
 
-    linked_user_ids = set()
-    for link in links:
-        if link.owner_id == user_id:
-            linked_user_ids.add(link.linked_user_id)
-        else:
-            linked_user_ids.add(link.owner_id)
 
-    if not linked_user_ids:
+async def get_linked_persons(db: AsyncSession, user_id: int) -> List[Person]:
+    """
+    Return persons from linked trees that have this user's link_id in their shared_with,
+    OR have shared_with containing "*" (broadcast).
+    """
+    links = await get_active_links_for_user(db, user_id)
+    if not links:
         return []
 
-    result = await db.execute(
-        select(Person).where(
-            and_(
-                Person.owner_id.in_(linked_user_ids),
-                Person.visibility == "shared"
-            )
+    # Find which link IDs correspond to which other-user's persons
+    # For each link, find the other user
+    linked_persons = []
+    for link in links:
+        other_user_id = link.linked_user_id if link.owner_id == user_id else link.owner_id
+        result = await db.execute(
+            select(Person).where(Person.owner_id == other_user_id)
         )
-    )
-    return result.scalars().all()
+        all_persons = result.scalars().all()
+        for p in all_persons:
+            sw = p.shared_with or []
+            # Visible if: shared with everyone ("*"), or this specific link_id is in list
+            if "*" in sw or link.id in sw:
+                linked_persons.append(p)
+
+    return linked_persons
 
 
 async def get_relations_for_user(db: AsyncSession, user_id: int) -> List[Relation]:
@@ -54,7 +58,6 @@ async def get_relations_for_user(db: AsyncSession, user_id: int) -> List[Relatio
     person_ids = [p.id for p in persons]
     if not person_ids:
         return []
-
     result = await db.execute(
         select(Relation).where(
             or_(
@@ -115,9 +118,7 @@ async def delete_relation(db: AsyncSession, relation_id: int, user_id: int) -> b
     relation = result.scalar_one_or_none()
     if not relation:
         return False
-    # Verify ownership
-    all_ids = [relation.parent_id, relation.child_id, relation.person_a_id, relation.person_b_id]
-    all_ids = [i for i in all_ids if i]
+    all_ids = [x for x in [relation.parent_id, relation.child_id, relation.person_a_id, relation.person_b_id] if x]
     persons = await db.execute(
         select(Person).where(and_(Person.id.in_(all_ids), Person.owner_id == user_id))
     )
@@ -141,10 +142,98 @@ async def update_positions(db: AsyncSession, user_id: int, positions: list) -> b
     return True
 
 
+async def batch_update_sharing(
+    db: AsyncSession, user_id: int, person_ids: List[int], link_id: int, shared: bool
+) -> int:
+    """
+    Add or remove link_id from shared_with for the given person_ids.
+    Returns count of updated persons.
+    """
+    # Verify link belongs to this user
+    link_result = await db.execute(
+        select(TreeLink).where(
+            and_(
+                TreeLink.id == link_id,
+                or_(TreeLink.owner_id == user_id, TreeLink.linked_user_id == user_id),
+                TreeLink.status == "active"
+            )
+        )
+    )
+    link = link_result.scalar_one_or_none()
+    if not link:
+        return 0
+
+    count = 0
+    for pid in person_ids:
+        result = await db.execute(
+            select(Person).where(and_(Person.id == pid, Person.owner_id == user_id))
+        )
+        person = result.scalar_one_or_none()
+        if not person:
+            continue
+        sw = list(person.shared_with or [])
+        if shared and link_id not in sw:
+            sw.append(link_id)
+        elif not shared and link_id in sw:
+            sw.remove(link_id)
+        person.shared_with = sw
+        count += 1
+    await db.commit()
+    return count
+
+
+async def set_share_all(db: AsyncSession, user_id: int, link_id: int, broadcast: bool) -> int:
+    """
+    broadcast=True  → set shared_with=["*"] on all own persons (share everything)
+    broadcast=False → remove "*" from all persons for this link
+    """
+    link_result = await db.execute(
+        select(TreeLink).where(
+            and_(
+                TreeLink.id == link_id,
+                or_(TreeLink.owner_id == user_id, TreeLink.linked_user_id == user_id),
+                TreeLink.status == "active"
+            )
+        )
+    )
+    if not link_result.scalar_one_or_none():
+        return 0
+
+    result = await db.execute(select(Person).where(Person.owner_id == user_id))
+    persons = result.scalars().all()
+    for person in persons:
+        sw = list(person.shared_with or [])
+        if broadcast:
+            if link_id not in sw:
+                sw.append(link_id)
+            # remove "*" markers, use explicit link ids
+        else:
+            sw = [x for x in sw if x != link_id]
+        person.shared_with = sw
+    await db.commit()
+    return len(persons)
+
+
+async def get_sharing_status(db: AsyncSession, user_id: int, link_id: int) -> List[dict]:
+    """Return all own persons with their sharing status for a given link."""
+    result = await db.execute(select(Person).where(Person.owner_id == user_id))
+    persons = result.scalars().all()
+    return [
+        {
+            "person_id": p.id,
+            "full_name": p.full_name,
+            "nickname": p.nickname,
+            "gender": p.gender,
+            "birthday": p.birthday,
+            "shared": link_id in (p.shared_with or []),
+        }
+        for p in persons
+    ]
+
+
 # --- VCF Import/Export ---
 
 def parse_vcf(vcf_content: str) -> List[dict]:
-    """Parse VCF/vCard content into person dicts"""
     persons = []
     try:
         for vcard in vobject.readComponents(vcf_content):
@@ -157,80 +246,51 @@ def parse_vcf(vcf_content: str) -> List[dict]:
                 person['full_name'] = ' '.join(p for p in parts if p).strip()
             else:
                 continue
-
             if hasattr(vcard, 'nickname'):
                 person['nickname'] = vcard.nickname.value
-
             if hasattr(vcard, 'bday'):
                 bday = vcard.bday.value
-                if isinstance(bday, str):
-                    person['birthday'] = bday
-                else:
-                    person['birthday'] = bday.strftime('%Y-%m-%d')
-
+                person['birthday'] = bday if isinstance(bday, str) else bday.strftime('%Y-%m-%d')
             if hasattr(vcard, 'tel'):
                 person['phone'] = vcard.tel.value
-
             if hasattr(vcard, 'email'):
                 person['email'] = vcard.email.value
-
             if hasattr(vcard, 'adr'):
                 adr = vcard.adr.value
                 parts = [adr.street, adr.city, adr.region, adr.code, adr.country]
                 person['address'] = ', '.join(p for p in parts if p)
-
             if hasattr(vcard, 'gender'):
                 g = vcard.gender.value.upper()
                 person['gender'] = {'M': 'male', 'F': 'female'}.get(g, 'other')
-
             person['extra_fields'] = {}
             if hasattr(vcard, 'note'):
                 person['notes'] = vcard.note.value
-
             persons.append(person)
-    except Exception as e:
+    except Exception:
         pass
     return persons
 
 
 def export_to_vcf(persons: List[Person]) -> str:
-    """Export persons to VCF format"""
     vcf_parts = []
     for person in persons:
         vcard = vobject.vCard()
-
         vcard.add('fn').value = person.full_name
-
         n = vobject.vcard.Name(family='', given=person.full_name)
         vcard.add('n').value = n
-
         if person.nickname:
             vcard.add('nickname').value = person.nickname
-
         if person.birthday:
             vcard.add('bday').value = person.birthday
-
         if person.phone:
-            tel = vcard.add('tel')
-            tel.value = person.phone
-            tel.type_param = 'CELL'
-
+            tel = vcard.add('tel'); tel.value = person.phone; tel.type_param = 'CELL'
         if person.email:
-            email = vcard.add('email')
-            email.value = person.email
-            email.type_param = 'HOME'
-
+            email = vcard.add('email'); email.value = person.email; email.type_param = 'HOME'
         if person.address:
-            adr = vcard.add('adr')
-            adr.value = vobject.vcard.Address(street=person.address)
-
+            adr = vcard.add('adr'); adr.value = vobject.vcard.Address(street=person.address)
         if person.gender:
-            gender_map = {'male': 'M', 'female': 'F', 'other': 'O'}
-            vcard.add('gender').value = gender_map.get(person.gender, 'U')
-
+            vcard.add('gender').value = {'male': 'M', 'female': 'F', 'other': 'O'}.get(person.gender, 'U')
         if person.notes:
             vcard.add('note').value = person.notes
-
         vcf_parts.append(vcard.serialize())
-
     return '\n'.join(vcf_parts)
